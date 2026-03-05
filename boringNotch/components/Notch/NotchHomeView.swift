@@ -8,6 +8,7 @@
 
 import Combine
 import Defaults
+import AppKit
 import SwiftUI
 
 // MARK: - Music Player Components
@@ -228,8 +229,9 @@ struct MusicControlsView: View {
         )
         let padded = slotConfig.padded(to: sanitizedLimit, filler: .none)
         let result = Array(padded.prefix(sanitizedLimit))
-        // If calendar and camera are both visible alongside music, hide the edge slots
-        let shouldHideEdges = Defaults[.showCalendar] && Defaults[.showMirror] && webcamManager.cameraAvailable && vm.isCameraExpanded
+        // If a side panel and camera are both visible alongside music, hide edge slots
+        let sidePanelVisible = Defaults[.showCalendar] || Defaults[.quickClipboardSaveEnabled]
+        let shouldHideEdges = sidePanelVisible && Defaults[.showMirror] && webcamManager.cameraAvailable && vm.isCameraExpanded
         if shouldHideEdges && result.count >= 5 {
             return Array(result.dropFirst().dropLast())
         }
@@ -416,6 +418,150 @@ struct VolumeControlView: View {
     }
 }
 
+struct QuickClipboardUploadView: View {
+    @Default(.quickClipboardSaveFileBookmark) private var quickClipboardSaveFileBookmark: Data?
+    @State private var buttonState: UploadButtonState = .upload
+    @State private var restoreButtonTask: Task<Void, Never>?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Quick Save", systemImage: "square.and.arrow.down.on.square")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            Text(currentFileName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+
+            Button {
+                uploadClipboardToFile()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: buttonState == .saved ? "checkmark.circle.fill" : "arrow.up.doc")
+                    Text(buttonState == .saved ? "Saved" : "LoadUp")
+                }
+                .font(.system(.title3, design: .rounded).weight(.semibold))
+                .foregroundStyle(buttonState == .saved ? .green : .white)
+                .frame(maxWidth: .infinity, minHeight: 42)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(buttonState == .saved ? .green : .accentColor)
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 8)
+        .onDisappear {
+            restoreButtonTask?.cancel()
+        }
+    }
+
+    private var currentFileName: String {
+        guard let url = resolveQuickSaveFileURL(refreshBookmark: false) else {
+            return "No txt file configured"
+        }
+        return (try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? url.lastPathComponent
+    }
+
+    private func uploadClipboardToFile() {
+        guard let clipboardText = clipboardString() else { return }
+
+        guard let fileURL = resolveQuickSaveFileURL(refreshBookmark: true) else { return }
+
+        let timestamp = Self.timestampFormatter.string(from: Date())
+        let contentToAppend = "[\(timestamp)]\n\(clipboardText)\n"
+
+        do {
+            let writeSucceeded = try fileURL.accessSecurityScopedResource { accessibleURL in
+                try append(contentToAppend, to: accessibleURL)
+                return true
+            }
+            if writeSucceeded {
+                showSavedState()
+            }
+        } catch {
+            return
+        }
+    }
+
+    private func showSavedState() {
+        restoreButtonTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            buttonState = .saved
+        }
+
+        restoreButtonTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeInOut(duration: 0.8)) {
+                buttonState = .upload
+            }
+        }
+    }
+
+    private func append(_ text: String, to fileURL: URL) throws {
+        let data = Data(text.utf8)
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            let handle = try FileHandle(forWritingTo: fileURL)
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        } else {
+            try data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    private func clipboardString() -> String? {
+        let pasteboard = NSPasteboard.general
+        if let plainText = pasteboard.string(forType: .string)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !plainText.isEmpty
+        {
+            return plainText
+        }
+
+        if let textObjects = pasteboard.readObjects(forClasses: [NSString.self], options: nil) as? [String],
+           let first = textObjects.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !first.isEmpty
+        {
+            return first
+        }
+        return nil
+    }
+
+    private func resolveQuickSaveFileURL(refreshBookmark: Bool) -> URL? {
+        guard let bookmarkData = quickClipboardSaveFileBookmark else { return nil }
+        var isStale = false
+        do {
+            let url = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+
+            if refreshBookmark, isStale, let refreshedData = try? url.bookmarkData(options: [.withSecurityScope]) {
+                quickClipboardSaveFileBookmark = refreshedData
+            }
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    private static let timestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+
+    private enum UploadButtonState {
+        case upload
+        case saved
+    }
+}
+
 // MARK: - Main View
 
 struct NotchHomeView: View {
@@ -439,17 +585,30 @@ struct NotchHomeView: View {
         Defaults[.showMirror] && webcamManager.cameraAvailable && vm.isCameraExpanded
     }
 
+    private var shouldShowQuickSavePanel: Bool {
+        Defaults[.quickClipboardSaveEnabled]
+    }
+
+    private var shouldShowCalendarPanel: Bool {
+        Defaults[.showCalendar] && !shouldShowQuickSavePanel
+    }
+
     private var mainContent: some View {
-        HStack(alignment: .top, spacing: (shouldShowCamera && Defaults[.showCalendar]) ? 10 : 15) {
+        let showSidePanel = shouldShowCalendarPanel || shouldShowQuickSavePanel
+        return HStack(alignment: .top, spacing: (shouldShowCamera && showSidePanel) ? 10 : 15) {
             MusicPlayerView(albumArtNamespace: albumArtNamespace)
 
-            if Defaults[.showCalendar] {
+            if shouldShowCalendarPanel {
                 CalendarView()
                     .frame(width: shouldShowCamera ? 170 : 215)
                     .onHover { isHovering in
                         vm.isHoveringCalendar = isHovering
                     }
                     .environmentObject(vm)
+                    .transition(.opacity)
+            } else if shouldShowQuickSavePanel {
+                QuickClipboardUploadView()
+                    .frame(width: shouldShowCamera ? 170 : 215)
                     .transition(.opacity)
             }
 

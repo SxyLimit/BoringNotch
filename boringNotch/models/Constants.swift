@@ -25,6 +25,18 @@ struct CustomVisualizer: Codable, Hashable, Equatable, Defaults.Serializable {
     var speed: CGFloat = 1.0
 }
 
+struct FolderShortcutItem: Codable, Hashable, Equatable, Defaults.Serializable, Identifiable {
+    let id: UUID
+    var name: String
+    var bookmarkData: Data
+
+    init(id: UUID = UUID(), name: String, bookmarkData: Data) {
+        self.id = id
+        self.name = name
+        self.bookmarkData = bookmarkData
+    }
+}
+
 enum CalendarSelectionState: Codable, Defaults.Serializable {
     case all
     case selected(Set<String>)
@@ -107,6 +119,8 @@ extension Defaults.Keys {
     static let showNotHumanFace = Key<Bool>("showNotHumanFace", default: false)
     static let tileShowLabels = Key<Bool>("tileShowLabels", default: false)
     static let showCalendar = Key<Bool>("showCalendar", default: false)
+    static let quickClipboardSaveEnabled = Key<Bool>("quickClipboardSaveEnabled", default: false)
+    static let quickClipboardSaveFileBookmark = Key<Data?>("quickClipboardSaveFileBookmark", default: nil)
     static let hideCompletedReminders = Key<Bool>("hideCompletedReminders", default: true)
     static let sliderColor = Key<SliderColorEnum>(
         "sliderUseAlbumArtColor",
@@ -170,6 +184,7 @@ extension Defaults.Keys {
     static let copyOnDrag = Key<Bool>("copyOnDrag", default: false)
     static let autoRemoveShelfItems = Key<Bool>("autoRemoveShelfItems", default: false)
     static let expandedDragDetection = Key<Bool>("expandedDragDetection", default: true)
+    static let folderShortcuts = Key<[FolderShortcutItem]>("folderShortcuts", default: [])
     
     // MARK: Calendar
     static let calendarSelectionState = Key<CalendarSelectionState>("calendarSelectionState", default: .all)

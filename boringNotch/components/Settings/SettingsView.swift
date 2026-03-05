@@ -10,19 +10,13 @@ import Defaults
 import EventKit
 import KeyboardShortcuts
 import LaunchAtLogin
-import Sparkle
 import SwiftUI
 import SwiftUIIntrospect
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @State private var selectedTab = "General"
     @State private var accentColorUpdateTrigger = UUID()
-
-    let updaterController: SPUStandardUpdaterController?
-
-    init(updaterController: SPUStandardUpdaterController? = nil) {
-        self.updaterController = updaterController
-    }
 
     var body: some View {
         NavigationSplitView {
@@ -92,15 +86,7 @@ struct SettingsView: View {
                 case "Advanced":
                     Advanced()
                 case "About":
-                    if let controller = updaterController {
-                        About(updaterController: controller)
-                    } else {
-                        // Fallback with a default controller
-                        About(
-                            updaterController: SPUStandardUpdaterController(
-                                startingUpdater: false, updaterDelegate: nil,
-                                userDriverDelegate: nil))
-                    }
+                    About()
                 default:
                     GeneralSettings()
                 }
@@ -710,15 +696,29 @@ struct Media: View {
 struct CalendarSettings: View {
     @ObservedObject private var calendarManager = CalendarManager.shared
     @Default(.showCalendar) var showCalendar: Bool
+    @Default(.quickClipboardSaveEnabled) var quickClipboardSaveEnabled: Bool
+    @Default(.quickClipboardSaveFileBookmark) var quickClipboardSaveFileBookmark: Data?
     @Default(.hideCompletedReminders) var hideCompletedReminders
     @Default(.hideAllDayEvents) var hideAllDayEvents
     @Default(.autoScrollToNextEvent) var autoScrollToNextEvent
+    @State private var selectedQuickSaveFileName: String = "Not configured"
+    @State private var quickSaveConfigMessage: String?
+    @State private var quickSaveConfigIsError: Bool = false
 
     var body: some View {
         Form {
-            Defaults.Toggle(key: .showCalendar) {
-                Text("Show calendar")
-            }
+            Toggle(
+                "Show calendar",
+                isOn: Binding(
+                    get: { showCalendar },
+                    set: { newValue in
+                        showCalendar = newValue
+                        if newValue {
+                            quickClipboardSaveEnabled = false
+                        }
+                    }
+                )
+            )
             Defaults.Toggle(key: .hideCompletedReminders) {
                 Text("Hide completed reminders")
             }
@@ -730,6 +730,60 @@ struct CalendarSettings: View {
             }
             Defaults.Toggle(key: .showFullEventTitles) {
                 Text("Always show full event titles")
+            }
+            Section {
+                Toggle(
+                    "Enable quick save upload button",
+                    isOn: Binding(
+                        get: { quickClipboardSaveEnabled },
+                        set: { newValue in
+                            if newValue {
+                                guard quickClipboardSaveFileBookmark != nil else {
+                                    quickClipboardSaveEnabled = false
+                                    quickSaveConfigMessage = "Please choose a .txt file first."
+                                    quickSaveConfigIsError = true
+                                    return
+                                }
+                                quickClipboardSaveEnabled = true
+                                showCalendar = false
+                                quickSaveConfigMessage = nil
+                            } else {
+                                quickClipboardSaveEnabled = false
+                            }
+                        }
+                    )
+                )
+                .disabled(quickClipboardSaveFileBookmark == nil)
+
+                HStack {
+                    Text("Selected txt file")
+                    Spacer()
+                    Text(selectedQuickSaveFileName)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                HStack {
+                    Button("Choose TXT File") {
+                        chooseQuickSaveFile()
+                    }
+                    if quickClipboardSaveFileBookmark != nil {
+                        Button("Clear File", role: .destructive) {
+                            clearQuickSaveFile()
+                        }
+                    }
+                }
+
+                if let quickSaveConfigMessage {
+                    Text(quickSaveConfigMessage)
+                        .font(.caption)
+                        .foregroundStyle(quickSaveConfigIsError ? .red : .secondary)
+                }
+            } header: {
+                Text("Quick save to txt")
+            } footer: {
+                Text("This feature replaces calendar on the first page. Choose a .txt file first, then use Upload to append clipboard text with timestamp.")
             }
             Section(header: Text("Calendars")) {
                 if calendarManager.calendarAuthorizationStatus != .fullAccess {
@@ -811,6 +865,78 @@ struct CalendarSettings: View {
                 await calendarManager.checkCalendarAuthorization()
                 await calendarManager.checkReminderAuthorization()
             }
+            refreshQuickSaveFileDisplayName()
+            if quickClipboardSaveEnabled && quickClipboardSaveFileBookmark == nil {
+                quickClipboardSaveEnabled = false
+            }
+        }
+    }
+
+    private func chooseQuickSaveFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.allowedContentTypes = [.plainText]
+        panel.prompt = "Choose"
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard url.pathExtension.lowercased() == "txt" else {
+            quickSaveConfigMessage = "Only .txt files are supported."
+            quickSaveConfigIsError = true
+            return
+        }
+
+        do {
+            let bookmarkData = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            quickClipboardSaveFileBookmark = bookmarkData
+            selectedQuickSaveFileName = (try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? url.lastPathComponent
+            quickSaveConfigMessage = "Configured successfully."
+            quickSaveConfigIsError = false
+        } catch {
+            quickSaveConfigMessage = "Failed to configure file: \(error.localizedDescription)"
+            quickSaveConfigIsError = true
+        }
+    }
+
+    private func clearQuickSaveFile() {
+        quickClipboardSaveFileBookmark = nil
+        quickClipboardSaveEnabled = false
+        selectedQuickSaveFileName = "Not configured"
+        quickSaveConfigMessage = nil
+        quickSaveConfigIsError = false
+    }
+
+    private func refreshQuickSaveFileDisplayName() {
+        guard let url = resolveQuickSaveFileURL(refreshBookmark: true) else {
+            selectedQuickSaveFileName = "Not configured"
+            return
+        }
+        selectedQuickSaveFileName = (try? url.resourceValues(forKeys: [.localizedNameKey]).localizedName) ?? url.lastPathComponent
+    }
+
+    private func resolveQuickSaveFileURL(refreshBookmark: Bool) -> URL? {
+        guard let bookmarkData = quickClipboardSaveFileBookmark else { return nil }
+        var isStale = false
+        do {
+            let url = try URL(
+                resolvingBookmarkData: bookmarkData,
+                options: [.withSecurityScope],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+
+            if refreshBookmark, isStale, let refreshedData = try? url.bookmarkData(options: [.withSecurityScope]) {
+                quickClipboardSaveFileBookmark = refreshedData
+            }
+            return url
+        } catch {
+            return nil
         }
     }
 }
@@ -834,8 +960,6 @@ func lighterColor(from nsColor: NSColor, amount: CGFloat = 0.14) -> Color {
 
 struct About: View {
     @State private var showBuildNumber: Bool = false
-    let updaterController: SPUStandardUpdaterController
-    @Environment(\.openWindow) var openWindow
     var body: some View {
         VStack {
             Form {
@@ -864,8 +988,6 @@ struct About: View {
                 } header: {
                     Text("Version info")
                 }
-
-                UpdaterSettingsView(updater: updaterController.updater)
 
                 HStack(spacing: 30) {
                     Spacer(minLength: 0)
@@ -897,13 +1019,6 @@ struct About: View {
                     .padding(.horizontal, 10)
             }
             .frame(maxWidth: .infinity, alignment: .center)
-        }
-        .toolbar {
-            //            Button("Welcome window") {
-            //                openWindow(id: "onboarding")
-            //            }
-            //            .controlSize(.extraLarge)
-            CheckForUpdatesView(updater: updaterController.updater)
         }
         .navigationTitle("About")
     }
