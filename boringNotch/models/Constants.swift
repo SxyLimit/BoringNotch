@@ -17,6 +17,7 @@ let appVersion = "\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as
 
 let temporaryDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
 let spacing: CGFloat = 16
+let minimumHoverActivationDuration: TimeInterval = 0.3
 
 struct CustomVisualizer: Codable, Hashable, Equatable, Defaults.Serializable {
     let UUID: UUID
@@ -88,7 +89,7 @@ extension Defaults.Keys {
     static let releaseName = Key<String>("releaseName", default: "Flying Rabbit 🐇🪽")
     
     // MARK: Behavior
-    static let minimumHoverDuration = Key<TimeInterval>("minimumHoverDuration", default: 0.3)
+    static let minimumHoverDuration = Key<TimeInterval>("minimumHoverDuration", default: minimumHoverActivationDuration)
     static let enableHaptics = Key<Bool>("enableHaptics", default: true)
     static let openNotchOnHover = Key<Bool>("openNotchOnHover", default: true)
     static let extendHoverArea = Key<Bool>("extendHoverArea", default: false)

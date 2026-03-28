@@ -262,6 +262,11 @@ struct GeneralSettings: View {
                 enableGestures = true
             }
         }
+        .onAppear {
+            if minimumHoverDuration < minimumHoverActivationDuration {
+                minimumHoverDuration = minimumHoverActivationDuration
+            }
+        }
     }
 
     @ViewBuilder
@@ -315,7 +320,7 @@ struct GeneralSettings: View {
             }
             Toggle("Remember last tab", isOn: $coordinator.openLastTabByDefault)
             if openNotchOnHover {
-                Slider(value: $minimumHoverDuration, in: 0...1, step: 0.1) {
+                Slider(value: $minimumHoverDuration, in: minimumHoverActivationDuration...1, step: 0.1) {
                     HStack {
                         Text("Hover delay")
                         Spacer()

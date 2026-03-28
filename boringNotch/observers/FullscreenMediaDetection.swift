@@ -7,14 +7,13 @@
 
 import Foundation
 import Combine
-import Defaults
 import MacroVisionKit
 
 @MainActor
 final class FullscreenMediaDetector: ObservableObject {
     static let shared = FullscreenMediaDetector()
     
-    @Published var fullscreenStatus: [String: Bool] = [:]
+    @Published var fullscreenAppsByScreen: [String: [String]] = [:]
     
     private var monitorTask: Task<Void, Never>?
     
@@ -36,21 +35,14 @@ final class FullscreenMediaDetector: ObservableObject {
     }
     
     private func updateStatus(with spaces: [MacroVisionKit.FullScreenMonitor.SpaceInfo]) {
-        var newStatus: [String: Bool] = [:]
+        var newAppsByScreen: [String: [String]] = [:]
         
         for space in spaces {
             if let uuid = space.screenUUID {
-                let shouldDetect: Bool
-                if Defaults[.hideNotchOption] == .nowPlayingOnly, let musicSourceBundle = MusicManager.shared.bundleIdentifier  {
-                    shouldDetect = space.runningApps.contains(musicSourceBundle)
-                } else {
-                    shouldDetect = true
-                }
-                newStatus[uuid] = shouldDetect
+                newAppsByScreen[uuid] = space.runningApps
             }
         }
         
-        self.fullscreenStatus = newStatus
+        fullscreenAppsByScreen = newAppsByScreen
     }
 }
-

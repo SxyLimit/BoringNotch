@@ -24,7 +24,9 @@ struct ContentView: View {
     @ObservedObject var brightnessManager = BrightnessManager.shared
     @ObservedObject var volumeManager = VolumeManager.shared
     @State private var hoverTask: Task<Void, Never>?
+    @State private var openHoverTask: Task<Void, Never>?
     @State private var isHovering: Bool = false
+    @State private var isInHoverActivationRegion: Bool = false
     @State private var anyDropDebounceTask: Task<Void, Never>?
 
     @State private var gestureProgress: CGFloat = .zero
@@ -42,6 +44,10 @@ struct ContentView: View {
 
     private let extendedHoverPadding: CGFloat = 30
     private let zeroHeightHoverPadding: CGFloat = 10
+
+    private var hoverActivationDelay: TimeInterval {
+        max(Defaults[.minimumHoverDuration], minimumHoverActivationDuration)
+    }
 
     private var topCornerRadius: CGFloat {
        ((vm.notchState == .open) && Defaults[.cornerRadiusScaling])
@@ -128,8 +134,8 @@ struct ContentView: View {
                             .animation(.smooth, value: gestureProgress)
                     }
                     .contentShape(Rectangle())
-                    .onHover { hovering in
-                        handleHover(hovering)
+                    .onContinuousHover(coordinateSpace: .local) { phase in
+                        handleHover(phase)
                     }
                     .onTapGesture {
                         doOpen()
@@ -161,6 +167,9 @@ struct ContentView: View {
                         }
                     }
                     .onChange(of: vm.notchState) { _, newState in
+                        openHoverTask?.cancel()
+                        isInHoverActivationRegion = false
+
                         if newState == .closed && isHovering {
                             withAnimation {
                                 isHovering = false
@@ -510,36 +519,29 @@ struct ContentView: View {
 
     // MARK: - Hover Management
 
-    private func handleHover(_ hovering: Bool) {
+    private func handleHover(_ phase: HoverPhase) {
         if coordinator.firstLaunch { return }
-        hoverTask?.cancel()
-        
-        if hovering {
-            withAnimation(animationSpring) {
-                isHovering = true
-            }
-            
-            if vm.notchState == .closed && Defaults[.enableHaptics] {
-                haptics.toggle()
-            }
-            
-            guard vm.notchState == .closed,
-                  !coordinator.sneakPeek.show,
-                  Defaults[.openNotchOnHover] else { return }
-            
-            hoverTask = Task {
-                try? await Task.sleep(for: .seconds(Defaults[.minimumHoverDuration]))
-                guard !Task.isCancelled else { return }
-                
-                await MainActor.run {
-                    guard self.vm.notchState == .closed,
-                          self.isHovering,
-                          !self.coordinator.sneakPeek.show else { return }
-                    
-                    self.doOpen()
+
+        switch phase {
+        case .active:
+            hoverTask?.cancel()
+
+            let wasHovering = isHovering
+            if !wasHovering {
+                withAnimation(animationSpring) {
+                    isHovering = true
+                }
+
+                if vm.notchState == .closed && Defaults[.enableHaptics] {
+                    haptics.toggle()
                 }
             }
-        } else {
+
+            updateHoverActivationRegion(vm.isMouseHoveringInActivationRegion())
+
+        case .ended:
+            updateHoverActivationRegion(false)
+            hoverTask?.cancel()
             hoverTask = Task {
                 try? await Task.sleep(for: .milliseconds(100))
                 guard !Task.isCancelled else { return }
@@ -553,6 +555,39 @@ struct ContentView: View {
                         self.vm.close()
                     }
                 }
+            }
+        }
+    }
+
+    private func updateHoverActivationRegion(_ isActive: Bool) {
+        guard vm.notchState == .closed,
+              !coordinator.sneakPeek.show,
+              Defaults[.openNotchOnHover] else {
+            openHoverTask?.cancel()
+            isInHoverActivationRegion = false
+            return
+        }
+
+        guard isInHoverActivationRegion != isActive else { return }
+
+        isInHoverActivationRegion = isActive
+        openHoverTask?.cancel()
+
+        guard isActive else { return }
+
+        let delay = hoverActivationDelay
+        openHoverTask = Task {
+            try? await Task.sleep(for: .seconds(delay))
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                guard self.vm.notchState == .closed,
+                      self.isHovering,
+                      self.isInHoverActivationRegion,
+                      !self.coordinator.sneakPeek.show,
+                      self.vm.isMouseHoveringInActivationRegion() else { return }
+
+                self.doOpen()
             }
         }
     }

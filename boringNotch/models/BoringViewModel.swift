@@ -26,7 +26,7 @@ class BoringViewModel: NSObject, ObservableObject {
     @Published var anyDropZoneTargeting: Bool = false
     var cancellables: Set<AnyCancellable> = []
     
-    @Published var hideOnClosed: Bool = true
+    @Published var hideOnClosed: Bool = false
 
     @Published var edgeAutoOpenActive: Bool = false
     @Published var isHoveringCalendar: Bool = false
@@ -70,27 +70,43 @@ class BoringViewModel: NSObject, ObservableObject {
     }
     
     private func setupDetectorObserver() {
-        // Publisher for the user’s fullscreen detection setting
-        let enabledPublisher = Defaults
+        let hideOptionPublisher = Defaults
             .publisher(.hideNotchOption)
             .map(\.newValue)
-            .map { $0 != .never }
             .removeDuplicates()
 
-        // Publisher for the current screen UUID (non-nil, distinct)
         let screenPublisher = $screenUUID
-            .compactMap { $0 }
             .removeDuplicates()
 
-        // Publisher for fullscreen status dictionary
-        let fullscreenStatusPublisher = detector.$fullscreenStatus
+        let fullscreenAppsPublisher = detector.$fullscreenAppsByScreen
             .removeDuplicates()
 
-        // Combine all three: screen UUID, fullscreen status, and enabled setting
-        Publishers.CombineLatest3(screenPublisher, fullscreenStatusPublisher, enabledPublisher)
-            .map { screenUUID, fullscreenStatus, enabled in
-                let isFullscreen = fullscreenStatus[screenUUID] ?? false
-                return enabled && isFullscreen
+        let musicSourceBundlePublisher = MusicManager.shared.$bundleIdentifier
+            .removeDuplicates()
+
+        Publishers.CombineLatest4(
+            screenPublisher,
+            fullscreenAppsPublisher,
+            hideOptionPublisher,
+            musicSourceBundlePublisher
+        )
+            .map { screenUUID, fullscreenAppsByScreen, hideOption, musicSourceBundle in
+                guard let screenUUID,
+                      let fullscreenApps = fullscreenAppsByScreen[screenUUID] else {
+                    return false
+                }
+
+                switch hideOption {
+                case .never:
+                    return false
+                case .always:
+                    return true
+                case .nowPlayingOnly:
+                    guard let musicSourceBundle, !musicSourceBundle.isEmpty else {
+                        return false
+                    }
+                    return fullscreenApps.contains(musicSourceBundle)
+                }
             }
             .removeDuplicates()
             .receive(on: RunLoop.main)
@@ -177,16 +193,27 @@ class BoringViewModel: NSObject, ObservableObject {
     }
     
     func isMouseHovering(position: NSPoint = NSEvent.mouseLocation) -> Bool {
-        let screenFrame = getScreenFrame(screenUUID)
-        if let frame = screenFrame {
-            
-            let baseY = frame.maxY - notchSize.height
-            let baseX = frame.midX - notchSize.width / 2
-            
-            return position.y >= baseY && position.x >= baseX && position.x <= baseX + notchSize.width
-        }
-        
-        return false
+        guard let hoverRect = closedNotchHoverRect() else { return false }
+        return hoverRect.containsIncludingEdges(position)
+    }
+
+    func isMouseHoveringInActivationRegion(position: NSPoint = NSEvent.mouseLocation) -> Bool {
+        guard let activationRect = closedNotchHoverRect(upperHalfOnly: true) else { return false }
+        return activationRect.containsIncludingEdges(position)
+    }
+
+    private func closedNotchHoverRect(upperHalfOnly: Bool = false) -> CGRect? {
+        guard let frame = getScreenFrame(screenUUID) else { return nil }
+
+        let closedSize = getClosedNotchSize(screenUUID: screenUUID)
+        let hoverHeight = upperHalfOnly ? closedSize.height / 2 : closedSize.height
+
+        return CGRect(
+            x: frame.midX - closedSize.width / 2,
+            y: frame.maxY - hoverHeight,
+            width: closedSize.width,
+            height: hoverHeight
+        )
     }
 
     func open() {
@@ -225,5 +252,12 @@ class BoringViewModel: NSObject, ObservableObject {
                 close()
             }
         }
+    }
+}
+
+private extension CGRect {
+    func containsIncludingEdges(_ point: CGPoint) -> Bool {
+        point.x >= minX && point.x <= maxX
+            && point.y >= minY && point.y <= maxY
     }
 }
